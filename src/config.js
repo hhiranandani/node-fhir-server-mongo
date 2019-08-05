@@ -95,7 +95,7 @@ let fhirServerConfig = {
 		},
 		Patient: {
 			service: './src/services/patient/patient.service.js',
-			versions: [VERSIONS['4_0_0']]
+			versions: [VERSIONS['4_0_0'], VERSIONS['3_0_1']]
 		},
 	}
 };
