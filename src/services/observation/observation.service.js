@@ -1,8 +1,6 @@
 /*eslint no-unused-vars: "warn"*/
 
 const { resolveSchema } = require('@asymmetrik/node-fhir-server-core');
-
-
 const { COLLECTION, CLIENT_DB } = require('../../constants');
 const globals = require('../../globals');
 const logger = require('@asymmetrik/node-fhir-server-core').loggers.get();
@@ -75,22 +73,54 @@ module.exports.search = (args) => new Promise((resolve, reject) => {
 	let query = {};
 	let ors = [];
 
-	// Handle all arguments that have or logic
-	if (value_string) {
-		query['valueQuantity.value'] = stringQueryBuilder(value_string);
+	if (based_on) {
+		let queryBuilder = referenceQueryBuilder(based_on, 'basedOn.reference');
+		for (let i in queryBuilder) {
+			query[i] = queryBuilder[i];
+		}
 	}
 
-	// TODO: Query database
+	if (category) {
+		let queryBuilder = tokenQueryBuilder(category, 'code', 'category.coding', '');
+		for (let i in queryBuilder) {
+			query[i] = queryBuilder[i];
+		}
+	}
 
+	if (code) {
+		let queryBuilder = tokenQueryBuilder(code, 'code', 'code.coding', '');
+		for (let i in queryBuilder) {
+			query[i] = queryBuilder[i];
+		}
+	}
+
+	// Handle all arguments that have or logic
+	if (value_string) {
+		// TODO this should search the value as a string, however mongo doesnt search numeric values with string
+		query['valueQuantity.value'] = Number(value_string);
+	}
+
+	// Grab an instance of our DB and collection
+	let db = globals.get(CLIENT_DB);
+	let collection = db.collection(`${COLLECTION.OBSERVATION}_${base_version}`);
 	let Observation = getObservation(base_version);
 
-	// Cast all results to Observation Class
-	let observation_resource = new Observation();
-	// TODO: Set data with constructor or setter methods
-	observation_resource.id = 'test id';
+	// Query our collection for this observation
+	collection.find(query, (err, data) => {
+		if (err) {
+			logger.error('Error with Observation.search: ', err);
+			return reject(err);
+		}
 
-	// Return Array
-	resolve([observation_resource]);
+		// Observation is a observation cursor, pull documents out before resolving
+		data.toArray().then((observations) => {
+			observations.forEach(function (element, i, returnArray) {
+				returnArray[i] = new Observation(element);
+			});
+			resolve(observations);
+		});
+	});
+
 });
 
 module.exports.searchById = (args) => new Promise((resolve, reject) => {
