@@ -83,15 +83,19 @@ let fhirServerConfig = {
 	profiles: {
 		AllergyIntolerance: {
 			service: './src/services/allergyintolerance/allergyintolerance.service.js',
-			versions: [ VERSIONS['4_0_0'] ]
+			versions: [VERSIONS['4_0_0']]
 		},
 		Organization: {
 			service: './src/services/organization/organization.service.js',
-			versions: [ VERSIONS['4_0_0'] ]
+			versions: [VERSIONS['4_0_0']]
+		},
+		Observation: {
+			service: './src/services/observation/observation.service.js',
+			versions: [VERSIONS['4_0_0']]
 		},
 		Patient: {
 			service: './src/services/patient/patient.service.js',
-			versions: [ VERSIONS['4_0_0'] ]
+			versions: [VERSIONS['4_0_0'], VERSIONS['3_0_1']]
 		},
 	}
 };

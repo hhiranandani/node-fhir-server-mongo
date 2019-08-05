@@ -1,16 +1,26 @@
 /*eslint no-unused-vars: "warn"*/
 
-const { RESOURCES } = require('@asymmetrik/node-fhir-server-core').constants;
-const FHIRServer = require('@asymmetrik/node-fhir-server-core');
-const { ObjectID } = require('mongodb');
+const { resolveSchema } = require('@asymmetrik/node-fhir-server-core');
+const { COLLECTION, CLIENT_DB } = require('../../constants');
+const globals = require('../../globals');
+const logger = require('@asymmetrik/node-fhir-server-core').loggers.get();
+const moment = require('moment-timezone');
+const { getUuid } = require('../../utils/uid.util');
+
+
+const { stringQueryBuilder,
+	tokenQueryBuilder,
+	referenceQueryBuilder } = require('../../utils/querybuilder.util');
 
 let getObservation = (base_version) => {
-	return require(FHIRServer.resolveFromVersion(base_version, RESOURCES.OBSERVATION));};
+	return require(resolveSchema(base_version, 'Observation'));
+};
 
 let getMeta = (base_version) => {
-	return require(FHIRServer.resolveFromVersion(base_version, RESOURCES.META));};
+	return require(resolveSchema(base_version, 'Meta'));
+};
 
-module.exports.search = (args, context, logger) => new Promise((resolve, reject) => {
+module.exports.search = (args) => new Promise((resolve, reject) => {
 	logger.info('Observation >>> search');
 
 	// Common search params
@@ -60,21 +70,60 @@ module.exports.search = (args, context, logger) => new Promise((resolve, reject)
 	let value_string = args['value-string'];
 
 	// TODO: Build query from Parameters
+	let query = {};
+	let ors = [];
 
-	// TODO: Query database
+	if (based_on) {
+		let queryBuilder = referenceQueryBuilder(based_on, 'basedOn.reference');
+		for (let i in queryBuilder) {
+			query[i] = queryBuilder[i];
+		}
+	}
 
+	if (category) {
+		let queryBuilder = tokenQueryBuilder(category, 'code', 'category.coding', '');
+		for (let i in queryBuilder) {
+			query[i] = queryBuilder[i];
+		}
+	}
+
+	if (code) {
+		let queryBuilder = tokenQueryBuilder(code, 'code', 'code.coding', '');
+		for (let i in queryBuilder) {
+			query[i] = queryBuilder[i];
+		}
+	}
+
+	// Handle all arguments that have or logic
+	if (value_string) {
+		// TODO this should search the value as a string, however mongo doesnt search numeric values with string
+		query['valueQuantity.value'] = Number(value_string);
+	}
+
+	// Grab an instance of our DB and collection
+	let db = globals.get(CLIENT_DB);
+	let collection = db.collection(`${COLLECTION.OBSERVATION}_${base_version}`);
 	let Observation = getObservation(base_version);
 
-	// Cast all results to Observation Class
-	let observation_resource = new Observation();
-	// TODO: Set data with constructor or setter methods
-	observation_resource.id = 'test id';
+	// Query our collection for this observation
+	collection.find(query, (err, data) => {
+		if (err) {
+			logger.error('Error with Observation.search: ', err);
+			return reject(err);
+		}
 
-	// Return Array
-	resolve([observation_resource]);
+		// Observation is a observation cursor, pull documents out before resolving
+		data.toArray().then((observations) => {
+			observations.forEach(function (element, i, returnArray) {
+				returnArray[i] = new Observation(element);
+			});
+			resolve(observations);
+		});
+	});
+
 });
 
-module.exports.searchById = (args, context, logger) => new Promise((resolve, reject) => {
+module.exports.searchById = (args) => new Promise((resolve, reject) => {
 	logger.info('Observation >>> searchById');
 
 	let { base_version, id } = args;
@@ -95,30 +144,59 @@ module.exports.searchById = (args, context, logger) => new Promise((resolve, rej
 	resolve();
 });
 
-module.exports.create = (args, context, logger) => new Promise((resolve, reject) => {
+module.exports.create = (args, { req }) => new Promise((resolve, reject) => {
 	logger.info('Observation >>> create');
 
-	let { base_version, resource } = args;
-	// Make sure to use this ID when inserting this resource
-	let id = new ObjectID().toString();
+	let resource = req.body;
 
+	let { base_version } = args;
+
+	// Grab an instance of our DB and collection (by version)
+	let db = globals.get(CLIENT_DB);
+	let collection = db.collection(`${COLLECTION.OBSERVATION}_${base_version}`);
+
+	// Get current record
 	let Observation = getObservation(base_version);
+	let observation = new Observation(resource);
+
+	// Make sure to use this ID when inserting this resource
+	let id = getUuid(observation);
+
+	// Set Meta info
 	let Meta = getMeta(base_version);
+	observation.meta = new Meta({ versionId: '1', lastUpdated: moment.utc().format('YYYY-MM-DDTHH:mm:ssZ') });
 
-	// TODO: determine if client/server sets ID
+	// Create the document to be inserted into Mongo
+	let doc = JSON.parse(JSON.stringify(observation.toJSON()));
+	Object.assign(doc, { id: id });
 
-	// Cast resource to Observation Class
-	let observation_resource = new Observation(resource);
-	observation_resource.meta = new Meta();
-	// TODO: set meta info
+	// Create a clone of the object without the _id parameter before assigning a value to
+	// the _id parameter in the original document
+	let history_doc = Object.assign({}, doc);
+	Object.assign(doc, { _id: id });
 
-	// TODO: save record to database
+	// Insert our patient record
+	collection.insertOne(doc, (err) => {
+		if (err) {
+			logger.error('Error with Observation.create: ', err);
+			return reject(err);
+		}
 
-	// Return Id
-	resolve({ id });
+		// Save the resource to history
+		let history_collection = db.collection(`${COLLECTION.OBSERVATION}_${base_version}_History`);
+
+		// Insert our patient record to history but don't assign _id
+		return history_collection.insertOne(history_doc, (err2) => {
+			if (err2) {
+				logger.error('Error with ObservationHistory.create: ', err2);
+				return reject(err2);
+			}
+			return resolve({ id: doc.id, resource_version: doc.meta.versionId });
+		});
+	});
 });
 
-module.exports.update = (args, context, logger) => new Promise((resolve, reject) => {
+module.exports.update = (args, { req }) => new Promise((resolve, reject) => {
 	logger.info('Observation >>> update');
 
 	let { base_version, id, resource } = args;
@@ -137,7 +215,7 @@ module.exports.update = (args, context, logger) => new Promise((resolve, reject)
 	resolve({ id: observation_resource.id, created: false, resource_version: observation_resource.meta.versionId });
 });
 
-module.exports.remove = (args, context, logger) => new Promise((resolve, reject) => {
+module.exports.remove = (args, context) => new Promise((resolve, reject) => {
 	logger.info('Observation >>> remove');
 
 	let { id } = args;
@@ -148,7 +226,7 @@ module.exports.remove = (args, context, logger) => new Promise((resolve, reject)
 	resolve({ deleted: 0 });
 });
 
-module.exports.searchByVersionId = (args, context, logger) => new Promise((resolve, reject) => {
+module.exports.searchByVersionId = (args, context) => new Promise((resolve, reject) => {
 	logger.info('Observation >>> searchByVersionId');
 
 	let { base_version, id, version_id } = args;
@@ -166,7 +244,7 @@ module.exports.searchByVersionId = (args, context, logger) => new Promise((resol
 	resolve(observation_resource);
 });
 
-module.exports.history = (args, context, logger) => new Promise((resolve, reject) => {
+module.exports.history = (args, context) => new Promise((resolve, reject) => {
 	logger.info('Observation >>> history');
 
 	// Common search params
@@ -228,7 +306,7 @@ module.exports.history = (args, context, logger) => new Promise((resolve, reject
 	resolve([observation_resource]);
 });
 
-module.exports.historyById = (args, context, logger) => new Promise((resolve, reject) => {
+module.exports.historyById = (args, context) => new Promise((resolve, reject) => {
 	logger.info('Observation >>> historyById');
 
 	// Common search params
